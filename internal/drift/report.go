@@ -3,62 +3,82 @@ package drift
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"text/tabwriter"
 )
 
-// ReportFormat defines the output format for drift reports.
-type ReportFormat string
-
-const (
-	FormatText ReportFormat = "text"
-	FormatSummary ReportFormat = "summary"
-)
-
-// Report writes a drift report for the given diffs to the provided writer.
-func Report(w io.Writer, diffs []ResourceDiff, format ReportFormat) error {
-	switch format {
-	case FormatText:
-		return reportText(w, diffs)
-	case FormatSummary:
-		return reportSummary(w, diffs)
-	default:
-		return fmt.Errorf("unknown report format: %q", format)
-	}
+// Report holds the results of a drift detection run.
+type Report struct {
+	Drifts []ResourceDrift
 }
 
-func reportText(w io.Writer, diffs []ResourceDiff) error {
-	if len(diffs) == 0 {
-		_, err := fmt.Fprintln(w, "No drift detected. Infrastructure matches Terraform state.")
-		return err
+// ResourceDrift describes the drift found for a single resource.
+type ResourceDrift struct {
+	ResourceType string
+	ResourceName string
+	Diffs        []AttributeDiff
+}
+
+// AttributeDiff describes a single attribute mismatch.
+type AttributeDiff struct {
+	Attribute string
+	Expected  string
+	Actual    string
+}
+
+// HasDrift returns true if any drift was detected.
+func (r *Report) HasDrift() bool {
+	return len(r.Drifts) > 0
+}
+
+// reportText writes a human-readable drift report to w.
+func reportText(r *Report, w io.Writer) {
+	if !r.HasDrift() {
+		fmt.Fprintln(w, "✓ No drift detected. Infrastructure matches Terraform state.")
+		return
 	}
-	_, err := fmt.Fprintf(w, "Detected %d drift(s):\n", len(diffs))
-	if err != nil {
-		return err
-	}
-	for _, d := range diffs {
-		_, err = fmt.Fprintf(w, "  - %s\n", d.String())
-		if err != nil {
-			return err
+
+	fmt.Fprintf(w, "⚠ Drift detected in %d resource(s):\n\n", len(r.Drifts))
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, rd := range r.Drifts {
+		fmt.Fprintf(tw, "Resource:\t%s.%s\n", rd.ResourceType, rd.ResourceName)
+		fmt.Fprintf(tw, "%-30s\t%-30s\t%-30s\n",
+			"ATTRIBUTE", "EXPECTED (state)", "ACTUAL (live)")
+		fmt.Fprintf(tw, "%s\t%s\t%s\n",
+			strings.Repeat("-", 30),
+			strings.Repeat("-", 30),
+			strings.Repeat("-", 30))
+		for _, diff := range rd.Diffs {
+			fmt.Fprintf(tw, "%-30s\t%-30s\t%-30s\n",
+				diff.Attribute, diff.Expected, diff.Actual)
 		}
+		_ = tw.Flush()
+		fmt.Fprintln(w)
 	}
-	return nil
 }
 
-func reportSummary(w io.Writer, diffs []ResourceDiff) error {
-	if len(diffs) == 0 {
-		_, err := fmt.Fprintln(w, "Status: OK (0 drifts)")
-		return err
+// reportSummary writes a one-line summary to w.
+func reportSummary(r *Report, w io.Writer) {
+	if !r.HasDrift() {
+		fmt.Fprintln(w, "No drift detected.")
+		return
 	}
-	resources := make(map[string]int)
-	for _, d := range diffs {
-		key := d.ResourceType + "." + d.ResourceName
-		resources[key]++
+	total := 0
+	for _, rd := range r.Drifts {
+		total += len(rd.Diffs)
 	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Status: DRIFT DETECTED (%d attribute(s) across %d resource(s))\n", len(diffs), len(resources)))
-	for res, count := range resources {
-		sb.WriteString(fmt.Sprintf("  %s: %d attribute(s) drifted\n", res, count))
-	}
-	_, err := fmt.Fprint(w, sb.String())
-	return err
+	fmt.Fprintf(w, "Drift detected: %d resource(s) with %d attribute diff(s).\n",
+		len(r.Drifts), total)
+}
+
+// Print writes the full drift report to stdout.
+func (r *Report) Print() {
+	reportText(r, os.Stdout)
+}
+
+// Summary writes a one-line summary to stdout.
+func (r *Report) Summary() {
+	reportSummary(r, os.Stdout)
 }
