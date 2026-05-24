@@ -1,0 +1,9 @@
+# Example driftwatch configuration
+statefile: terraform.tfstate
+provider: aws
+output: text
+filters:
+  resource_types:
+    - aws_instance
+    - aws_s3_bucket
+  exclude_ids: []

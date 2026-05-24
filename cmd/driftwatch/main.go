@@ -6,25 +6,51 @@ import (
 	"log"
 	"os"
 
-	"github.com/driftwatch/driftwatch/internal/tfstate"
+	"github.com/yourorg/driftwatch/internal/config"
+	"github.com/yourorg/driftwatch/internal/drift"
+	"github.com/yourorg/driftwatch/internal/provider"
+	"github.com/yourorg/driftwatch/internal/tfstate"
 )
 
 func main() {
-	statePath := flag.String("state", "terraform.tfstate", "path to Terraform state file")
+	cfgPath := flag.String("config", "driftwatch.yaml", "path to driftwatch config file")
 	flag.Parse()
 
-	if _, err := os.Stat(*statePath); os.IsNotExist(err) {
-		log.Fatalf("state file not found: %s", *statePath)
-	}
-
-	state, err := tfstate.ParseFile(*statePath)
+	cfg, err := config.Load(*cfgPath)
 	if err != nil {
-		log.Fatalf("failed to parse state: %v", err)
+		log.Fatalf("config: %v", err)
 	}
 
-	fmt.Printf("Terraform state version: %d\n", state.Version)
-	fmt.Printf("Resources found: %d\n", len(state.Resources))
-	for _, r := range state.Resources {
-		fmt.Printf("  [%s] %s\n", r.Type, r.Name)
+	state, err := tfstate.ParseFile(cfg.Statefile)
+	if err != nil {
+		log.Fatalf("state: %v", err)
+	}
+
+	var p provider.Provider
+	switch cfg.Provider {
+	case config.ProviderAWS:
+		p = provider.NewAWSProvider()
+	case config.ProviderGCP:
+		p = provider.NewGCPProvider()
+	case config.ProviderAzure:
+		p = provider.NewAzureProvider()
+	default:
+		log.Fatalf("unsupported provider: %s", cfg.Provider)
+	}
+
+	detector := drift.NewDetector(p)
+	report, err := detector.Detect(state)
+	if err != nil {
+		log.Fatalf("detect: %v", err)
+	}
+
+	if cfg.Output == "json" {
+		fmt.Println(report.JSON())
+	} else {
+		fmt.Println(report.Text())
+	}
+
+	if report.HasDrift() {
+		os.Exit(1)
 	}
 }
